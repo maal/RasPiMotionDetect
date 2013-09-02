@@ -1,13 +1,15 @@
-#! /usr/bin/python
+#!/usr/bin/python
 
 import logging
 import optparse, ConfigParser
 import time, os, subprocess, tempfile, cStringIO
 import threading, Queue
+import time
+import smtplib
+
 
 import gdata.photos.service
 from PIL import Image
-
 # This limit of a 1000 pics per album comes from here:
 # https://support.google.com/picasa/answer/43879?hl=fi
 # But it can be any value under 1000.
@@ -19,7 +21,7 @@ INI_FILE='config.ini'
 
 
 class BackgroundUpload(threading.Thread):
-    """thread that runs in the background uploading pics to Picasa"""
+    """thread that runs in the background uploading pics to Google"""
     def __init__ (self, album_params, q, name_prefix, myname):
         self.album_params = album_params
         self.q = q
@@ -71,14 +73,14 @@ class BackgroundUpload(threading.Thread):
                                                           '',
                                                           filehandle,
                                                           content_type=pic_type)
-                    logging.debug("%s: Pic uploaded to Picasa. Photos in album: %d" % (self.myname, (self.album_params.num_photos+1)))
+                    logging.debug("%s: Pic uploaded to Google. Photos in album: %d" % (self.myname, (self.album_params.num_photos+1)))
                     filehandle.close()
                     if (os.path.exists(filehandle.name)):
                         os.unlink(filehandle.name)
                     self.q.task_done()
                     self.album_params.num_photos += 1
                     if (self.album_params.num_photos >= MAX_PHOTOS_PER_ALBUM):
-                        # limit for the number of photos per album in Picasa.
+                        # limit for the number of photos per album in Google.
                         logging.info("exceeded max number of photos per album. Create new one")
                         self.create_next_album()
                     
@@ -164,7 +166,7 @@ class ConfigRead:
         
 
 # bundled object to store some parameters for the individual threads
-class PicasaAlbumParams:
+class GoogleAlbumParams:
     def __init__(self, gdata, album, num_photos, unsuffixed_album_name, current_album_suffix):
         self.gdata = gdata
         self.album_name = album.title.text
@@ -175,7 +177,7 @@ class PicasaAlbumParams:
 
 
 
-class PicasaLogin:
+class GoogleLogin:
     """This class handles the gdata login + album id extraction gubbins"""
     def __init__(self, email, password, username):
         self.username = username
@@ -189,7 +191,7 @@ class PicasaLogin:
             self.picasa.ProgrammaticLogin()
             return True
         except Exception as ex:
-            logging.critical("Picasa Login failed! Exception: %s" % ex)
+            logging.critical("Google Login failed! Exception: %s" % ex)
             return False
     
     def get_album_url(self, album_name):
@@ -260,7 +262,7 @@ def capture_test_image(config):
 
 # capture full-size image and add it to the queue for background upload
 def upload_image(queue, config):
-    command = "raspistill -rot %s -w 2048 -h 1536 -e jpg %s -o -" % \
+    command = "raspistill -rot %s -w IMAGE_WIDTH -h IMAGE_HEIGTH -e jpg %s -o -" % \
                             (config.rotation, config.cam_options)
         
     """
@@ -334,14 +336,14 @@ def main():
     else:
         end_time = time.time() + (config.loop_hrs*60*60)
 
-    logging.debug("Login to Picasa")
-    gdata_login = PicasaLogin(config.email, config.password, config.username)
+    logging.debug("Login to Google")
+    gdata_login = GoogleLogin(config.email, config.password, config.username)
     while (not gdata_login.login()):
         time.sleep(0.5) # chill awhile
 
 
     album, num_photos, unsuffixed_album_name, current_album_suffix = gdata_login.get_album_url(config.album_name)
-    album_params = PicasaAlbumParams(gdata_login, album, num_photos, unsuffixed_album_name, current_album_suffix)
+    album_params = GoogleAlbumParams(gdata_login, album, num_photos, unsuffixed_album_name, current_album_suffix)
 
     
     logging.debug("Setup Threads & Queues")
@@ -356,7 +358,7 @@ def main():
     # If so spawn another thread + queue to handle that
     if (config.upload_scratch_pics):
         album, num_photos, unsuffixed_album_name, current_album_suffix = gdata_login.get_album_url(config.album_name + "_thumbs")
-        album_params_thumbs = PicasaAlbumParams(
+        album_params_thumbs = GoogleAlbumParams(
                     gdata_login, album, num_photos, unsuffixed_album_name, current_album_suffix)
 
         upload_queue_thumbs = Queue.Queue()
@@ -468,6 +470,27 @@ def main():
     upload_queue.join()
     
     logging.debug("Exiting.....")
+
+def sendEmail():
+  username = "xxxxxx"
+  password = "xxxxxx"
+  FROM = "jasebell@gmail.com"
+  TO = ["jasebell@gmail.com"]
+  SUBJECT = "Testing sending using gmail"
+  TEXT = "Motion was detected from the Raspberry Pi"
+
+  message = """\From: %s\nTo: %s\nSubject: %s\n\n%s
+  """ % (FROM, ", ".join(TO), SUBJECT, TEXT)
+  try:
+    server = smtplib.SMTP("smtp.gmail.com", 587) #or port 465 doesn't seem to work!
+    server.ehlo()
+    server.starttls()
+    server.login(username, password)
+    server.sendmail(FROM, TO, message)
+    server.close()
+    print 'successfully sent the mail'
+  except:
+    print "failed to send mail"
 
 if __name__ == '__main__':
     main()
